@@ -1,0 +1,11 @@
+Name: Hello World
+Type: batch
+Count: 1
+Tasks:
+  - Name: main
+    Engine:
+      Type: docker
+      Params:
+        Image: hello-world
+    Network:
+      Type: Full
