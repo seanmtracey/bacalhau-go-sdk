@@ -65,6 +65,8 @@ client := bacalhau.New(host, port, useSecure, accessToken)
 
 ## Available Methods
 
+All of the following methods will return structs that map to the response values that can be found in the [Bacalhau API Documentation](https://docs.bacalhau.org/cli-api/api/overview) for the corresponding requests.
+
 ### `ListNodes()`
 Endpoint: `GET /api/v1/orchestrator/nodes`
 > Lists all active nodes in the Bacalhau network.
