@@ -1,4 +1,4 @@
-module bacalhau-go-sdk
+module github.com/seanmtracey/bacalhau-go-sdk
 
 go 1.23.7
 
