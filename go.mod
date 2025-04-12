@@ -1,4 +1,4 @@
-module bacalhau-sdk
+module bacalhau-go-sdk
 
 go 1.23.7
 
