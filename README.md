@@ -14,13 +14,13 @@ The best experience is with an [Expanso Cloud](https://cloud.expanso.io) Managed
 
 First, install the package on your system with
 ```go
-go get github.com/bacalhau-project/bacalhau-go-sdk
+go get github.com/seanmtracey/bacalhau-go-sdk/pkg/bacalhau-sdk/client
 ```
 
 Import your local module (or your hosted module, e.g., via GitHub):
 
 ```go
-import bacalhau "github.com/bacalhau-project/bacalhau-go-sdk/pkg/bacalhau-sdk/client"
+import bacalhau "github.com/seanmtracey/bacalhau-go-sdk/pkg/bacalhau-sdk/client"
 ```
 
 ### Example Usage
