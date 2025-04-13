@@ -310,34 +310,50 @@ func New(host, port string, useSecure bool, accessToken string) *Client {
 
 }
 
-func (c *Client) ListNodes() (NodeListResponse, error) {
-	
-	nodesListURL := fmt.Sprintf("%s/api/v1/orchestrator/nodes", c.constructOrchestratorURL())
-	
-	req, err := http.NewRequest("GET", nodesListURL, nil)
+func (c *Client) makeRequest(method, url string, body []byte) ([]byte, error) {
+	req, err := http.NewRequest(method, url, bytes.NewBuffer(body))
 	if err != nil {
-		return NodeListResponse{}, err
+		return nil, err
 	}
 
+	req.Header.Set("Content-Type", "application/json")
 	if c.UseSecure && c.AccessToken != "" {
-		req.Header.Set("Authorization", "Bearer " + c.AccessToken)
+		req.Header.Set("Authorization", "Bearer "+c.AccessToken)
 	}
-	
+
 	resp, err := http.DefaultClient.Do(req)
 	if err != nil {
-		return NodeListResponse{}, err
+		return nil, err
 	}
 	defer resp.Body.Close()
 
+	respBytes, err := io.ReadAll(resp.Body)
+	if err != nil {
+		return nil, err
+	}
+
 	if resp.StatusCode != http.StatusOK {
-		body, _ := io.ReadAll(resp.Body)
-		return NodeListResponse{}, fmt.Errorf("failed to fetch node list: %s", string(body))
+		return nil, fmt.Errorf("HTTP %d: %s", resp.StatusCode, string(respBytes))
+	}
+
+	return respBytes, nil
+}
+
+func (c *Client) ListNodes() (NodeListResponse, error) {
+	
+	url := fmt.Sprintf("%s/api/v1/orchestrator/nodes", c.constructOrchestratorURL())
+	
+	body, err := c.makeRequest("GET", url, nil)
+	if err != nil {
+		return NodeListResponse{}, err
 	}
 
 	var result NodeListResponse
-	err = json.NewDecoder(resp.Body).Decode(&result)
+	if err := json.Unmarshal(body, &result); err != nil {
+		return NodeListResponse{}, err
+	}
 
-	return result, err
+	return result, nil
 
 }
 
@@ -345,219 +361,135 @@ func (c *Client) GetNodeInfo(nodeID string) (NodeResponse, error) {
 
 	url := fmt.Sprintf("%s/api/v1/orchestrator/nodes/%s", c.constructOrchestratorURL(), nodeID)
 	
-	req, err := http.NewRequest("GET", url, nil)
+	body, err := c.makeRequest("GET", url, nil)
 	if err != nil {
 		return NodeResponse{}, err
 	}
 
-	if c.UseSecure && c.AccessToken != "" {
-		req.Header.Set("Authorization", "Bearer "+c.AccessToken)
-	}
-	
-	resp, err := http.DefaultClient.Do(req)
-	if err != nil {
+	var node NodeResponse
+	if err := json.Unmarshal(body, &node); err != nil {
 		return NodeResponse{}, err
 	}
-	defer resp.Body.Close()
 
-	var nodesList NodeResponse
-	err = json.NewDecoder(resp.Body).Decode(&nodesList)
-
-	return nodesList, err
+	return node, nil
 
 }
 
-func (c *Client) DescribeJob(JobID string) (JobDescription, error) {
-
-	if JobID == ""{
-		return JobDescription{}, errors.New(`"JobID" parameter cannot be an empty string.`)
-	}
-
-	url := fmt.Sprintf("%s/api/v1/orchestrator/jobs/%s", c.constructOrchestratorURL(), JobID)
-	req, err := http.NewRequest("GET", url, nil)
-	if err != nil {
-		fmt.Println("Error creating job description request:", err)
-		return JobDescription{}, errors.New( fmt.Sprintf("Could not describe Job. Error: %s", err.Error()) )
+func (c *Client) DescribeJob(jobID string) (JobDescription, error) {
+	
+	if jobID == "" {
+		return JobDescription{}, errors.New(`"JobID" cannot be empty`)
 	}
 	
-	req.Header.Set("Content-Type", "application/json")
-	
-	if c.UseSecure && c.AccessToken != "" {
-		req.Header.Set("Authorization", "Bearer "+c.AccessToken)
-	}
-
-	resp, err := http.DefaultClient.Do(req)
+	url := fmt.Sprintf("%s/api/v1/orchestrator/jobs/%s", c.constructOrchestratorURL(), jobID)
+	body, err := c.makeRequest("GET", url, nil)
 	if err != nil {
-		fmt.Println("Error getting job description:", err)
-		return JobDescription{}, errors.New( fmt.Sprintf("Could not describe Job. Error: %s", err.Error()) )
-	}
-	defer resp.Body.Close()
-
-	var response JobDescription
-	if err := json.NewDecoder(resp.Body).Decode(&response); err != nil {
-		fmt.Println("Error decoding job response:", err)
-		return JobDescription{}, errors.New( fmt.Sprintf("Could not describe Job. Error: %s", err.Error()) )
+		return JobDescription{}, err
 	}
 
-	return response, nil
+	var job JobDescription
+	if err := json.Unmarshal(body, &job); err != nil {
+		return JobDescription{}, err
+	}
+
+	return job, nil
 
 }
 
-func (c *Client) CreateJob(Job string, format string) (CreateJobResponse, error) {
+func (c *Client) CreateJob(job string, format string) (CreateJobResponse, error) {
 
 	if format != "yaml" && format != "json" {
-		return CreateJobResponse{}, errors.New( fmt.Sprintf(`"format" parameter must be either "json" or "yaml". The passed value was "%s"`, format ) )
+		return CreateJobResponse{}, fmt.Errorf(`format must be "json" or "yaml"`)
 	}
 
 	if format == "yaml" {
-		jsonJob, conversionErr := ConvertYamlToJSON(Job)
 
-		if conversionErr != nil {
-			return CreateJobResponse{}, conversionErr
-		} else {
-			Job = jsonJob
+		convertedJob, err := ConvertYamlToJSON(job)
+		if err != nil {
+			return CreateJobResponse{}, err
 		}
 
+		job = convertedJob
+
 	}
-	
+
 	var jsonObj map[string]interface{}
-	
-	if err := json.Unmarshal([]byte(Job), &jsonObj); err != nil {
-		return CreateJobResponse{}, errors.New(fmt.Sprintf("Could not create Job. Error: %s", err.Error()))
+	if err := json.Unmarshal([]byte(job), &jsonObj); err != nil {
+		return CreateJobResponse{}, err
 	}
 
 	if _, ok := jsonObj["Job"]; !ok {
-
-		wrappedJob, wrapErr := wrapJob(Job)
-
-		if wrapErr != nil {
-			return CreateJobResponse{}, errors.New(fmt.Sprintf("Could not create Job. Error: %s", wrapErr.Error()))
+		
+		wrappedJob, err := wrapJob(job)
+		if err != nil {
+			return CreateJobResponse{}, err
 		}
 
-		Job = wrappedJob
+		job = wrappedJob
 
 	}
 
 	url := fmt.Sprintf("%s/api/v1/orchestrator/jobs", c.constructOrchestratorURL())
-	req, err := http.NewRequest("PUT", url, bytes.NewBuffer([]byte(Job)))
+	body, err := c.makeRequest("PUT", url, []byte(job))
 	if err != nil {
-		fmt.Println("Error creating job request:", err)
-		return CreateJobResponse{}, errors.New( fmt.Sprintf("Could not create Job. Error: %s", err.Error()) )
+		return CreateJobResponse{}, err
 	}
-	
-	req.Header.Set("Content-Type", "application/json")
-	
-	if c.UseSecure && c.AccessToken != "" {
-		req.Header.Set("Authorization", "Bearer "+c.AccessToken)
-	}
-
-	resp, err := http.DefaultClient.Do(req)
-	if err != nil {
-		fmt.Println("Error sending job:", err)
-		return CreateJobResponse{}, errors.New( fmt.Sprintf("Could not create Job. Error: %s", err.Error()) )
-	}
-	defer resp.Body.Close()
 
 	var response CreateJobResponse
-	if err := json.NewDecoder(resp.Body).Decode(&response); err != nil {
-		fmt.Println("Error decoding job response:", err)
-		return CreateJobResponse{}, errors.New( fmt.Sprintf("Could not create Job. Error: %s", err.Error()) )
+	if err := json.Unmarshal(body, &response); err != nil {
+		return CreateJobResponse{}, err
 	}
 
 	return response, nil
 
 }
 
-func (c *Client) StopJob(JobID, reason string) (StopJobResponse, error) {
+func (c *Client) StopJob(jobID, reason string) (StopJobResponse, error) {
 
-	url := fmt.Sprintf("%s/api/v1/orchestrator/jobs/%s", c.constructOrchestratorURL(), JobID)
-	payload := map[string]string{ "reason": reason }
+	url := fmt.Sprintf("%s/api/v1/orchestrator/jobs/%s", c.constructOrchestratorURL(), jobID)
+	payload := map[string]string{"reason": reason}
 	data, _ := json.Marshal(payload)
 
-	req, err := http.NewRequest("DELETE", url, bytes.NewBuffer(data))
+	body, err := c.makeRequest("DELETE", url, data)
 	if err != nil {
 		return StopJobResponse{}, err
 	}
-
-	req.Header.Set("Content-Type", "application/json")
-	
-	if c.UseSecure && c.AccessToken != "" {
-		req.Header.Set("Authorization", "Bearer "+c.AccessToken)
-	}
-
-	resp, err := http.DefaultClient.Do(req)
-	if err != nil {
-		return StopJobResponse{}, err
-	}
-	defer resp.Body.Close()
 
 	var response StopJobResponse
-
-	if err := json.NewDecoder(resp.Body).Decode(&response); err != nil {
-		fmt.Println("Error parsing response from stopping Job:", err.Error())
-		return StopJobResponse{}, errors.New( fmt.Sprintf("Could not stop Job. Error: %s", err.Error()) )
+	if err := json.Unmarshal(body, &response); err != nil {
+		return StopJobResponse{}, err
 	}
 
 	return response, nil
 
 }
 
-func (c *Client) GetJobHistory(JobID string, parameters map[string]interface{}) (JobHistory, error) {
-	
-	filters, _ := constructURLQueryParameters(parameters)
+func (c *Client) GetJobHistory(jobID string, parameters map[string]interface{}) (JobHistory, error) {
 
-	url := fmt.Sprintf("%s/api/v1/orchestrator/jobs/%s/history%s", c.constructOrchestratorURL(), JobID, filters)
-	req, err := http.NewRequest("GET", url, nil)
+	queryString, _ := constructURLQueryParameters(parameters)
+	url := fmt.Sprintf("%s/api/v1/orchestrator/jobs/%s/history%s", c.constructOrchestratorURL(), jobID, queryString)
+
+	body, err := c.makeRequest("GET", url, nil)
 	if err != nil {
-		return JobHistory{}, fmt.Errorf("Could not create job history request: %s", err.Error())
+		return JobHistory{}, err
 	}
-
-	req.Header.Set("Content-Type", "application/json")
-
-	if c.UseSecure && c.AccessToken != "" {
-		req.Header.Set("Authorization", "Bearer "+c.AccessToken)
-	}
-
-	resp, err := http.DefaultClient.Do(req)
-	if err != nil {
-		return JobHistory{}, fmt.Errorf("Could not send job history request: %s", err.Error())
-	}
-	defer resp.Body.Close()
-
-	bodyBytes, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return JobHistory{}, fmt.Errorf("Could not read job history response: %s", err.Error())
-	}
-
-	// fmt.Println("Raw response body:\n", string(bodyBytes))
 
 	var response JobHistory
-	if err := json.Unmarshal(bodyBytes, &response); err != nil {
-		return JobHistory{}, fmt.Errorf("Could not decode job history: %s", err.Error())
+	if err := json.Unmarshal(body, &response); err != nil {
+		return JobHistory{}, err
 	}
 
 	return response, nil
 
 }
 
-func (c *Client) GetJobResult(JobID string) (JobExecutionResult, error) {
+func (c *Client) GetJobResult(jobID string) (JobExecutionResult, error) {
 
-	url := fmt.Sprintf("%s/api/v1/orchestrator/jobs/%s/executions", c.constructOrchestratorURL(), JobID)
-	
-	req, err := http.NewRequest("GET", url, nil)
+	url := fmt.Sprintf("%s/api/v1/orchestrator/jobs/%s/executions", c.constructOrchestratorURL(), jobID)
+	body, err := c.makeRequest("GET", url, nil)
 	if err != nil {
 		return JobExecutionResult{}, err
 	}
-	
-	if c.UseSecure && c.AccessToken != "" {
-		req.Header.Set("Authorization", "Bearer "+c.AccessToken)
-	}
-	
-	resp, err := http.DefaultClient.Do(req)
-	if err != nil {
-		return JobExecutionResult{}, err
-	}
-	defer resp.Body.Close()
 
 	var executions struct {
 		Items []struct {
@@ -567,174 +499,89 @@ func (c *Client) GetJobResult(JobID string) (JobExecutionResult, error) {
 			} `json:"RunOutput"`
 		} `json:"Items"`
 	}
-
-	err = json.NewDecoder(resp.Body).Decode(&executions)
-	if err != nil {
+	if err := json.Unmarshal(body, &executions); err != nil {
 		return JobExecutionResult{}, err
 	}
 
 	for _, exec := range executions.Items {
-
 		if exec.RunOutput.Stdout != "" {
 			return JobExecutionResult{
-				JobID:       JobID,
+				JobID:       jobID,
 				ExecutionID: exec.ID,
 				Stdout:      exec.RunOutput.Stdout,
 			}, nil
 		}
-
 	}
 
-	return JobExecutionResult{}, fmt.Errorf("no executions with stdout found")
+	return JobExecutionResult{}, errors.New("no executions with stdout found")
 
 }
 
 func (c *Client) GetJobExecutions(jobID string) (JobExecutions, error) {
 
 	url := fmt.Sprintf("%s/api/v1/orchestrator/jobs", c.constructOrchestratorURL())
-	req, err := http.NewRequest("GET", url, nil)
+	body, err := c.makeRequest("GET", url, nil)
 	if err != nil {
-		fmt.Println("Error creating job request:", err)
-		return JobExecutions{}, errors.New( fmt.Sprintf("Could not create Job. Error: %s", err.Error()) )
-	}
-	
-	req.Header.Set("Content-Type", "application/json")
-	
-	if c.UseSecure && c.AccessToken != "" {
-		req.Header.Set("Authorization", "Bearer "+c.AccessToken)
+		return JobExecutions{}, err
 	}
 
-	resp, err := http.DefaultClient.Do(req)
-	if err != nil {
-		fmt.Println("Error sending job:", err)
-		return JobExecutions{}, errors.New( fmt.Sprintf("Could not create Job. Error: %s", err.Error()) )
-	}
-	defer resp.Body.Close()
-
-	bodyBytes, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return JobExecutions{}, fmt.Errorf("failed to read response body: %w", err)
+	var result JobExecutions
+	if err := json.Unmarshal(body, &result); err != nil {
+		return JobExecutions{}, err
 	}
 
-	var response JobExecutions
-	if err := json.Unmarshal(bodyBytes, &response); err != nil {
-		return JobExecutions{}, fmt.Errorf("failed to decode response: %w", err)
-	}
-
-	return response, nil
+	return result, nil
 
 }
 
 func (c *Client) IsAlive() (AgentStatus, error) {
 
 	url := fmt.Sprintf("%s/api/v1/agent/alive", c.constructOrchestratorURL())
-	req, err := http.NewRequest("GET", url, nil)
+	body, err := c.makeRequest("GET", url, nil)
 	if err != nil {
-		fmt.Println("Error creating job request:", err)
-		return AgentStatus{}, errors.New( fmt.Sprintf("Could not create Job. Error: %s", err.Error()) )
-	}
-	
-	req.Header.Set("Content-Type", "application/json")
-	
-	if c.UseSecure && c.AccessToken != "" {
-		req.Header.Set("Authorization", "Bearer "+c.AccessToken)
+		return AgentStatus{}, err
 	}
 
-	resp, err := http.DefaultClient.Do(req)
-	if err != nil {
-		fmt.Println("Error sending job:", err)
-		return AgentStatus{}, errors.New( fmt.Sprintf("Could not create Job. Error: %s", err.Error()) )
-	}
-	defer resp.Body.Close()
-
-	bodyBytes, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return AgentStatus{}, fmt.Errorf("failed to read response body: %w", err)
+	var status AgentStatus
+	if err := json.Unmarshal(body, &status); err != nil {
+		return AgentStatus{}, err
 	}
 
-	// fmt.Println("Raw response body:\n", string(bodyBytes))
-
-	// Decode JSON into map
-	var response AgentStatus
-	if err := json.Unmarshal(bodyBytes, &response); err != nil {
-		return AgentStatus{}, fmt.Errorf("failed to decode response: %w", err)
-	}
-
-	return response, nil
+	return status, nil
 
 }
 
 func (c *Client) GetBacalhauVersion() (AgentVersionResponse, error) {
 
 	url := fmt.Sprintf("%s/api/v1/agent/version", c.constructOrchestratorURL())
-	req, err := http.NewRequest("GET", url, nil)
+	body, err := c.makeRequest("GET", url, nil)
 	if err != nil {
-		fmt.Println("Error creating job request:", err)
-		return AgentVersionResponse{}, errors.New( fmt.Sprintf("Could not create Job. Error: %s", err.Error()) )
-	}
-	
-	req.Header.Set("Content-Type", "application/json")
-	
-	if c.UseSecure && c.AccessToken != "" {
-		req.Header.Set("Authorization", "Bearer "+c.AccessToken)
+		return AgentVersionResponse{}, err
 	}
 
-	resp, err := http.DefaultClient.Do(req)
-	if err != nil {
-		fmt.Println("Error sending job:", err)
-		return AgentVersionResponse{}, errors.New( fmt.Sprintf("Could not create Job. Error: %s", err.Error()) )
-	}
-	defer resp.Body.Close()
-
-	bodyBytes, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return AgentVersionResponse{}, fmt.Errorf("failed to read response body: %w", err)
+	var version AgentVersionResponse
+	if err := json.Unmarshal(body, &version); err != nil {
+		return AgentVersionResponse{}, err
 	}
 
-	// Decode JSON into map
-	var response AgentVersionResponse
-	if err := json.Unmarshal(bodyBytes, &response); err != nil {
-		return AgentVersionResponse{}, fmt.Errorf("failed to decode response: %w", err)
-	}
-
-	return response, nil
+	return version, nil
 
 }
 
 func (c *Client) GetAgentNodeInfo() (NodeInfo, error) {
 
 	url := fmt.Sprintf("%s/api/v1/agent/node", c.constructOrchestratorURL())
-	req, err := http.NewRequest("GET", url, nil)
+	body, err := c.makeRequest("GET", url, nil)
 	if err != nil {
-		fmt.Println("Error creating job request:", err)
-		return NodeInfo{}, errors.New( fmt.Sprintf("Could not create Job. Error: %s", err.Error()) )
-	}
-	
-	req.Header.Set("Content-Type", "application/json")
-	
-	if c.UseSecure && c.AccessToken != "" {
-		req.Header.Set("Authorization", "Bearer "+c.AccessToken)
+		return NodeInfo{}, err
 	}
 
-	resp, err := http.DefaultClient.Do(req)
-	if err != nil {
-		fmt.Println("Error sending job:", err)
-		return NodeInfo{}, errors.New( fmt.Sprintf("Could not create Job. Error: %s", err.Error()) )
-	}
-	defer resp.Body.Close()
-
-	bodyBytes, err := io.ReadAll(resp.Body)
-	if err != nil {
-		return NodeInfo{}, fmt.Errorf("failed to read response body: %w", err)
+	var node NodeInfo
+	if err := json.Unmarshal(body, &node); err != nil {
+		return NodeInfo{}, err
 	}
 
-	// Decode JSON into map
-	var response NodeInfo
-	if err := json.Unmarshal(bodyBytes, &response); err != nil {
-		return NodeInfo{}, fmt.Errorf("failed to decode response: %w", err)
-	}
-
-	return response, nil
+	return node, nil
 
 }
 
